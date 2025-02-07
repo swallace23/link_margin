@@ -4,7 +4,6 @@ from scipy.spatial.transform import Rotation as R
 import utilities as ut
 import nyquist as ny
 import animation as ani
-import antenna as ant
 
 ############################################ Global Parameters ############################################
 # Receiving sites -- from SDR document
