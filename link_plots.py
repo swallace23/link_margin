@@ -1,4 +1,15 @@
+import argparse
+parser = argparse.ArgumentParser(description='Generate link budget plots', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("start_time", type=int, help="Start time for plot")
+parser.add_argument("end_time", type=int, help="End time for plot")
+parser.add_argument('-sr', '--sample_rate', type=int, default=10, help="Sample rate for interpolation. Reduce to improve performance for larger time slices.")
+parser.add_argument('-ymin', type=int, default=-95, help="Minimum y-axis value for plot")
+parser.add_argument('-ymax', type=int, default=-70, help="Maximum y-axis value for plot")
+args = vars(parser.parse_args())
+
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 import utilities as ut
@@ -29,8 +40,8 @@ long_tl = -149.598
 
 nec_sheet_name = "10152024_nec_data.xlsx"
 
-start_time = 500
-end_time = 520
+start_time = args["start_time"]
+end_time = args["end_time"]
 sample_rate = 30
 
 ############################################ Data Generation ############################################
@@ -99,5 +110,5 @@ plt.plot(times_interp,vt_signal_strength_ns, label='Venetie NS', linestyle='dash
 plt.plot(times_interp,tl_signal_strength_ew, label='Toolik EW')
 plt.plot(times_interp,tl_signal_strength_ns, label='Toolik NS', linestyle='dashed')
 plt.legend()
-plt.show()
+plt.savefig("output.png")
 

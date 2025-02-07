@@ -3,7 +3,9 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import CubicSpline
 from scipy.interpolate import RBFInterpolator as rbf
+from scipy.interpolate import RectBivariateSpline as rbs
 import pandas as pd
+from PyNEC import *
 
 ############################################ POLARIZATION LOSS FUNCTIONS ############################################
 def clip_norm_dots(vec1, vec2):
@@ -94,7 +96,7 @@ def spin_whip(times, angular_frequency=2*np.pi, whip_unit_vec=[1,0,0]):
 
     return transmitters
 
-############################################ RECEIVER GAIN FUNCTIONS ############################################
+############################################ ANTENNA GAIN FUNCTIONS ############################################
 # Get NEC data from excel spreadsheet
 def data_from_excel(sheet_name):
 	signal_data = pd.read_excel(sheet_name)
@@ -104,61 +106,83 @@ def data_from_excel(sheet_name):
 	signal_data.loc[signal_data['TOTAL']<=-900, 'TOTAL']=-20
 	return(signal_data)
 
-# Get interpolated function with Radial Basis Function 
+# Get receiver gain interpolation function 
 def rbf_nec_data(signal_data):
 	theta_vals = signal_data[['THETA']].to_numpy().flatten()
 	phi_vals = signal_data[['PHI']].to_numpy().flatten()
 	totals = signal_data['TOTAL'].to_numpy()
 	interp = rbf(list(zip(theta_vals, phi_vals)), totals)
 	return lambda thet, ph: interp(np.array([[thet, ph]])).item()
-#interpolate trajectory data
 
+# NOTE - New PyNEC installations on unix are broken. Must install version 1.7.3.4.
+def pynec_dipole_gain(frequency, length):
+    context = nec_context()
+    geo = context.get_geometry()
+    center = np.array([0,0,0])
+    wire_radius = 0.01e-3
+    length = 1
+    nr_segments = 11
+    half = np.array([length/2,0,0])
+    pt1 = center-half
+    pt2 = center + half
+    wire_tag = 1
+    geo.wire(tag_id=wire_tag, segment_count = nr_segments, xw1=pt1[0], yw1=pt1[1], zw1=pt1[2], xw2=pt2[0], yw2=pt2[1], zw2=pt2[2], rad=wire_radius, rdel=1.0, rrad=1.0)
+    context.geometry_complete(0)
+    context.gn_card(-1,0,0,0,0,0,0,0)
+    context.ex_card(0, wire_tag, int(nr_segments/2), 0, 0, 0, 0, 0, 0, 0, 0)
+    context.fr_card(ifrq=0,nfrq=1,freq_hz=frequency,del_freq=0)
+    context.rp_card(calc_mode=0,n_theta=90,n_phi=180,output_format=0,normalization=5,D=0,A=0,theta0=0.0,phi0=0.0,delta_theta=1.0,delta_phi=5,radial_distance=0.0,gain_norm=0.0)
+    rp = context.get_radiation_pattern(0)
+    return rp.get_gain()
+
+def interpolate_pynec(frequency, length, r_rocket):
+    gains = pynec_dipole_gain(frequency, length)
+    result = np.zeros(len(r_rocket))
+    thetas = np.linspace(0,90,90)
+    phis = np.linspace(0,180,180)
+    theta_grid, phi_grid = np.meshgrid(thetas,phis,indexing='ij')
+    y = np.column_stack([theta_grid.ravel(),phi_grid.ravel()])
+    data = gains.ravel()
+    #interp = rbf(y,data)
+    interp = rbs(thetas, phis, gains)
+    theta_vals = r_rocket[:,2]
+    phi_vals = r_rocket[:,1]
+    result = interp(theta_vals, phi_vals, grid=False)
+    return result
+
+# Get receiver gain 
 def get_receiver_gain(r_rocket, nec_sheet_name):
     signal_data = data_from_excel(nec_sheet_name)
-	# interpolate function from NEC data
     rbf_f = rbf_nec_data(signal_data)
 	# gain calculations
     gains = np.zeros(len(r_rocket))
     for i in range(len(r_rocket)):
          gains[i] = rbf_f(r_rocket[i][2],r_rocket[i][1])
-    #for phi, theta in zip(r_rocket[:,2], r_rocket[:,1]):
-    #    gains.append(rbf_f(theta, phi))
     return gains
 
 ############################################ SIGNAL VISUALIZATION FUNCTIONS ############################################
 
 freq = 162.990625e6  # transmit frequency (Hz)
 Gtx = 2.1  # dBi for transmitter gain
-txPwr = 1.5
+txPwr = 2 # Transmit power in Watts
 Bn = 20e3  # Bandwidth
 NFrx_dB = 0.5  # Noise figure in dB with a pre-amp
 NFrx = 10.0 ** (NFrx_dB / 10)  # Convert to dimensionless quantity
 c_speed = 3.0e8  # Speed of light in m/s
 kB = 1.38e-23  # Boltzmann constant
 
-def calc_received_power(rocket_pos, gains, ploss):
+def calc_received_power(rocket_pos, gains_rx, gains_tx, ploss):
     result = np.zeros(len(rocket_pos))
     for i in range(len(rocket_pos)):
         Lpath = (4.0*np.pi*rocket_pos[i][0]*freq/c_speed)**2
 
-        Pwr_rx = (txPwr * Gtx * gains[i]*(ploss[i]**2))/Lpath
+        # Power in Watts
+        Pwr_rx = (txPwr * gains_tx[i] * gains_rx[i]*(ploss[i]**2))/Lpath
 
         if Pwr_rx<=0:
             Pwr_rx = 1e-100
+        # Convert to dBW
         Pwr_rx_dBW = 10 * np.log10(Pwr_rx)
+        # Convert to dBm
         result[i] = Pwr_rx_dBW+30
-    """
-    for radius, gain, pol_loss in zip(rocket_pos, gains, ploss):
-        # Path loss calculation
-        Lpath = (4.0 * np.pi * radius * freq / c_speed) ** 2
-
-        # Received power calculation in Watts
-
-        Pwr_rx = (txPwr * Gtx * gain*(pol_loss**2)) / Lpath
-        if Pwr_rx <= 0:
-            Pwr_rx = 1e-100
-        Pwr_rx_dBW = 10 * np.log10(Pwr_rx)
-        # Append the calculated power to the list, converting to dbm
-        result.append(Pwr_rx_dBW+30)
-    """
     return result
