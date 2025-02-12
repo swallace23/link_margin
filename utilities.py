@@ -6,17 +6,33 @@ from scipy.interpolate import RBFInterpolator as rbf
 from scipy.interpolate import RectBivariateSpline as rbs
 import pandas as pd
 from PyNEC import *
-
-############################################ POLARIZATION LOSS FUNCTIONS ############################################
+import ppigrf as pp
+from datetime import date
+############################################ MATH UTILITIES ############################################
+# einsum - einstein summation convention - here, row-wise dot product
 def clip_norm_dots(vec1, vec2):
-     return np.clip(np.dot(vec1, vec2),0,0.9999)
+     return np.clip(np.einsum('ij,ij->i',vec1, vec2),0,0.9999)
+def unit_vector(vector):
+    return vector / np.linalg.norm(vector)
+
+def angle_between(v1, v2):
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+############################################ POLARIZATION LOSS FUNCTIONS ############################################
 
 def get_polarization_loss(receiver, source, separation):
-	receiver_hat = receiver / np.linalg.norm(receiver)
-	source_hat = source / np.linalg.norm(source)
-	separation_hat = separation / np.linalg.norm(separation)
-	return (clip_norm_dots(receiver_hat,source_hat)-(clip_norm_dots(receiver_hat,separation_hat)*clip_norm_dots(source_hat,separation_hat)))/(np.sqrt(1-clip_norm_dots(receiver_hat,separation_hat)**2)*np.sqrt(1-clip_norm_dots(source_hat,separation_hat)**2))
 
+    receiver_hat = unit_vector(receiver)
+    source_hat = unit_vector(source)
+    separation_hat = unit_vector(separation)
+    dot_rs = clip_norm_dots(receiver_hat,source_hat)
+    dot_rsep = clip_norm_dots(receiver_hat,separation_hat)
+    dot_ssep = clip_norm_dots(source_hat,separation_hat)
+    denominator = np.sqrt(1-dot_rsep**2)*np.sqrt(1-dot_ssep**2)
+    denominator = np.maximum(denominator,1e-6)
+    ploss = (dot_rs - (dot_rsep*dot_ssep))/denominator
+    return ploss
 # convert numpy vector from spherical to cartesian coordinates
 def s_c_vec_conversion(spherical_vec):
     x = spherical_vec[0] * np.sin(spherical_vec[1]) * np.cos(spherical_vec[2])
@@ -29,14 +45,19 @@ def c_s_vec_conversion(cartesian_vec):
     theta = np.arccos(cartesian_vec[2]/r)
     phi = np.arctan(cartesian_vec[1]/cartesian_vec[0])
     return np.array([r,theta,phi])
-
+def interp_time(times, sample_rate, start_time=0, end_time=None):
+    if end_time is None:
+        end_time = times[-1]
+    new_times = np.arange(times[0], times[-1],1/sample_rate)
+    interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
+    return new_times[interval_indices]
 #interpolates Nyquist position to given sample rate. Optionally specify time interval for performance.
-def interp_position(times, sample_rate, position_vector, start_time=0, end_time= None, coord_system = "spherical"):
+def interp_position(times, sample_rate, position_vector, start_time=0, end_time= None, coord_system = "spherical",new_times=None):
     #times with parameterized sample rate
     if end_time is None:
         end_time = times[-1]
-    
-    new_times = np.arange(times[0], times[-1],1/sample_rate)
+    if new_times is None:
+        new_times = np.arange(times[0], times[-1],1/sample_rate)
 
     position_vector[:, 1] = np.radians(position_vector[:, 1])  
     position_vector[:, 2] = np.radians(position_vector[:, 2])
@@ -57,10 +78,27 @@ def interp_position(times, sample_rate, position_vector, start_time=0, end_time=
     # Get cartesian versions for the specified time interval
     pos_interp_cart = np.apply_along_axis(s_c_vec_conversion, 1, np.copy(pos_interp))
 
-    """# Interpolate lat/lon/alt for IGRF alignment for the specified time interval
-    lat = np.array(traj_arraysrt["Latgd"])
-    lon = np.array(traj_arraysrt["Long"])
-    alt = np.array(traj_arraysrt["Altkm"])
+    
+    new_times = new_times[interval_indices]
+    if coord_system == "spherical":
+        return pos_interp
+    elif coord_system == "cartesian":
+        return pos_interp_cart
+    else:
+        raise ValueError("Invalid coordinate system specified. Must be 'spherical' or 'cartesian'.")
+    
+def interp_lat_lon(times, traj_array, start_time=0, end_time=None, sample_rate=30):
+    #times with parameterized sample rate
+    if end_time is None:
+        end_time = times[-1]
+    
+    new_times = np.arange(times[0], times[-1],1/sample_rate)
+    unique_indices = np.unique(times, return_index=True)[1]
+    times = times[unique_indices]
+    interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
+    lat = np.array(traj_array["Latgd"])
+    lon = np.array(traj_array["Long"])
+    alt = np.array(traj_array["Altkm"])
     lat = lat[unique_indices]
     lon = lon[unique_indices]
     alt = alt[unique_indices]
@@ -70,17 +108,38 @@ def interp_position(times, sample_rate, position_vector, start_time=0, end_time=
 
     lat_interp = lat_interp_func(new_times[interval_indices])
     lon_interp = lon_interp_func(new_times[interval_indices])
-    alt_interp = alt_interp_func(new_times[interval_indices])"""
+    alt_interp = alt_interp_func(new_times[interval_indices])
+    LLA_interp = np.column_stack([lat_interp, lon_interp, alt_interp])
 
-    new_times = new_times[interval_indices]
-    if coord_system == "spherical":
-        return new_times, pos_interp
-    elif coord_system == "cartesian":
-        return new_times, pos_interp_cart
-    else:
-        raise ValueError("Invalid coordinate system specified. Must be 'spherical' or 'cartesian'.")
+    return LLA_interp
+def get_mag(LLA):
+    td = date.today()
+    td = pd.Timestamp(td)
+    #east, north, up in nano teslas
+    Be, Bn, Bu = pp.igrf(LLA[:,1], LLA[:,0], LLA[:,2], td)
+    return np.array([Be, Bn, Bu]).squeeze().T
+
+
+def align_with_mag(LLA, transmitters):
+    Bs = get_mag(LLA)
+    B_mag = np.linalg.norm(Bs, axis=1)
+    #inclination angle
+    thetas = np.arccos(Bs[:,2]/ B_mag)
+    thetas = np.pi-np.abs(thetas)
+    #declination angle - positive means tilts east, negative means tilts west
+    declination = np.arctan2(Bs[:,0], Bs[:,1])
     
+    thetas_signed = np.sign(declination)*thetas
+    x_axis = np.full((len(thetas_signed),3),[1,0,0])
+    #reshape for rotation vector
+    rot_vecs = thetas_signed[:,np.newaxis]*x_axis
+
+    rot = R.from_rotvec(rot_vecs)
+    return rot.apply(transmitters)
+
+
 # spins unit vector at given frequency
+#TODO: Vectorize this
 def spin_whip(times, angular_frequency=2*np.pi, whip_unit_vec=[1,0,0]):
     transmitters = np.full((len(times),3),whip_unit_vec).astype(np.float64)
     z_axis = np.array([0,0,1]).astype(np.float64)
@@ -135,21 +194,19 @@ def pynec_dipole_gain(frequency, length):
     rp = context.get_radiation_pattern(0)
     return rp.get_gain()
 
+
 def interpolate_pynec(frequency, length, r_rocket):
     gains = pynec_dipole_gain(frequency, length)
     result = np.zeros(len(r_rocket))
     thetas = np.linspace(0,90,90)
     phis = np.linspace(0,180,180)
-    theta_grid, phi_grid = np.meshgrid(thetas,phis,indexing='ij')
-    y = np.column_stack([theta_grid.ravel(),phi_grid.ravel()])
-    data = gains.ravel()
-    #interp = rbf(y,data)
     interp = rbs(thetas, phis, gains)
     theta_vals = r_rocket[:,2]
     phi_vals = r_rocket[:,1]
     result = interp(theta_vals, phi_vals, grid=False)
     return result
 
+#TODO: Vectorize this, switch to RBS interpolation
 # Get receiver gain 
 def get_receiver_gain(r_rocket, nec_sheet_name):
     signal_data = data_from_excel(nec_sheet_name)
@@ -171,18 +228,12 @@ NFrx = 10.0 ** (NFrx_dB / 10)  # Convert to dimensionless quantity
 c_speed = 3.0e8  # Speed of light in m/s
 kB = 1.38e-23  # Boltzmann constant
 
+def path_loss(rocket_pos):
+    return (4*np.pi*rocket_pos[:,0]*freq/c_speed)**2
+
 def calc_received_power(rocket_pos, gains_rx, gains_tx, ploss):
-    result = np.zeros(len(rocket_pos))
-    for i in range(len(rocket_pos)):
-        Lpath = (4.0*np.pi*rocket_pos[i][0]*freq/c_speed)**2
-
-        # Power in Watts
-        Pwr_rx = (txPwr * gains_tx[i] * gains_rx[i]*(ploss[i]**2))/Lpath
-
-        if Pwr_rx<=0:
-            Pwr_rx = 1e-100
-        # Convert to dBW
-        Pwr_rx_dBW = 10 * np.log10(Pwr_rx)
-        # Convert to dBm
-        result[i] = Pwr_rx_dBW+30
-    return result
+     result_watts = (txPwr * np.multiply(np.multiply(gains_tx,gains_rx),ploss**2))/path_loss(rocket_pos)
+     result_watts[result_watts<=0]=1e-100
+     result_watts = result_watts.astype(np.float64)
+     result_dBm = 10*np.log10(result_watts)+30
+     return result_dBm

@@ -1,3 +1,5 @@
 *.venv
 *.spec
+*.pyc
+__pycache__/
 dist/

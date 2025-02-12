@@ -16,6 +16,9 @@ def read_traj_data(filename):
         title = title + "_rttraj"
     return traj_arraysrt
 
+def get_times(traj_arrays):
+    return traj_arrays["Time"]
+
 def spherical_to_cartesian(r, theta, phi):
 	x = r * np.sin(theta) * np.cos(phi)
 	y = r * np.sin(theta) * np.sin(phi)
@@ -61,4 +64,4 @@ def get_spherical_position(receiver_lat, receiver_lon, traj_arrays):
             phi += 180
         
         pos_vec[i][2] = (phi)
-    return times, pos_vec
+    return pos_vec
