@@ -31,7 +31,7 @@ nec_sheet_name = "10152024_nec_data.xlsx"
 
 start_time = 200
 end_time = 220
-sample_rate = 30
+sample_rate = 100
 
 class Receiver(Enum):
     PF = 0
@@ -48,10 +48,6 @@ positions = np.zeros((len(times),len(Receiver),3))
 for i in range(len(Receiver)):
     positions[:,i] = ny.get_spherical_position(coords[i][0], coords[i][1], traj_arrays)
 
-#r_pf = ny.get_spherical_position(lat_pf, long_pf, traj_arrays)
-#r_vt = ny.get_spherical_position(lat_vt, long_vt, traj_arrays)
-#r_tl = ny.get_spherical_position(lat_tl, long_tl, traj_arrays)
-#times_interp = ut.interp_position(times, sample_rate, positions[:,:,Receiver.PF.value], start_time, end_time)[0]
 times_interp = ut.interp_time(times, sample_rate, start_time, end_time)
 positions_interp = np.zeros((len(times_interp),len(Receiver),3))
 positions_interp_cartesian = np.zeros((len(times_interp),len(Receiver),3))
@@ -59,12 +55,6 @@ for i in range(len(Receiver)):
     positions_interp[:,i] = ut.interp_position(times, sample_rate, positions[:,i], start_time, end_time)
     positions_interp_cartesian[:,i] = ut.interp_position(times, sample_rate, positions[:,i], start_time, end_time, coord_system="cartesian")
 
-#r_pf_interp = ut.interp_position(times, sample_rate, r_pf, start_time, end_time)
-#r_pf_interp_cart = ut.interp_position(times, sample_rate, r_pf, start_time, end_time, coord_system="cartesian")
-#r_vt_interp = ut.interp_position(times, sample_rate, r_vt, start_time=start_time, end_time=end_time)
-#r_vt_interp_cart = ut.interp_position(times, sample_rate, r_vt,start_time=start_time, end_time=end_time, coord_system="cartesian")
-#r_tl_interp = ut.interp_position(times, sample_rate, r_tl,start_time=start_time,end_time=end_time)
-#r_tl_interp_cart = ut.interp_position(times, sample_rate, r_tl,start_time=start_time,end_time=end_time, coord_system="cartesian")
 lat_lon = ut.interp_lat_lon(times, traj_arrays, start_time, end_time, sample_rate)
 
 
@@ -73,40 +63,18 @@ receivers_ns = np.full((len(times_interp),3),[0,1,0]).astype(np.float64)
 
 transmitters = ut.spin_whip(times_interp, np.pi, [1,0,0])
 transmitters_aligned = ut.align_with_mag(lat_lon, transmitters).astype(np.float64)
-
-#pf_losses_ew = np.zeros(len(times_interp))
-#pf_losses_ns = np.zeros(len(times_interp))
-#vt_losses_ew = np.zeros(len(times_interp))
-#vt_losses_ns = np.zeros(len(times_interp))
-#tl_losses_ew = np.zeros(len(times_interp))
-#tl_losses_ns = np.zeros(len(times_interp))
 losses = np.zeros((len(times_interp),len(Receiver),2))
 for i in range(len(Receiver)):
     losses[:,i,0] = ut.get_polarization_loss(receivers_ew,transmitters_aligned,positions_interp_cartesian[:,i])
     losses[:,i,1] = ut.get_polarization_loss(receivers_ns,transmitters_aligned,positions_interp_cartesian[:,i])
 
-print((losses[:,Receiver.PF.value,0]**2).min())
-print((losses[:,Receiver.PF.value,0]**2).max())
 ############################################ Calculations ############################################
 # polarization losses
-# identical to containerized
-#pf_losses_ew=ut.get_polarization_loss(receivers_ew,transmitters_aligned,r_pf_interp_cart)
-#pf_losses_ns=ut.get_polarization_loss(receivers_ns,transmitters_aligned,r_pf_interp_cart)
-#vt_losses_ew=ut.get_polarization_loss(receivers_ew,transmitters_aligned,r_vt_interp_cart)
-#vt_losses_ns=ut.get_polarization_loss(receivers_ns,transmitters_aligned,r_vt_interp_cart)
-#tl_losses_ew=ut.get_polarization_loss(receivers_ew,transmitters_aligned,r_tl_interp_cart)
-#tl_losses_ns=ut.get_polarization_loss(receivers_ns,transmitters_aligned,r_tl_interp_cart)
-
 gains = np.zeros((len(times_interp),len(Receiver)))
 for i in range(len(Receiver)):
     gains[:,i] = ut.get_receiver_gain(positions_interp[:,i], nec_sheet_name)
 
 # gains
-#pf_gains = ut.get_receiver_gain(r_pf_interp, nec_sheet_name)
-
-#vt_gains = ut.get_receiver_gain(r_vt_interp, nec_sheet_name)
-#tl_gains = ut.get_receiver_gain(r_tl_interp, nec_sheet_name)
-
 transmit_gains = ut.interpolate_pynec(162.99, 1, positions_interp[:,Receiver.PF.value])
 
 
@@ -116,14 +84,16 @@ signal_strengths = np.zeros((len(times_interp),len(Receiver),2))
 for i in range(len(Receiver)):
     signal_strengths[:,i,0] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,0])
     signal_strengths[:,i,1] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,1])
-#pf_signal_strength_ew = ut.calc_received_power(r_pf_interp,pf_gains, pf_losses_ew, transmit_gains)
-#pf_signal_strength_ns = ut.calc_received_power(r_pf_interp,pf_gains, pf_losses_ns, transmit_gains)
-#vt_signal_strength_ew = ut.calc_received_power(r_vt_interp,vt_gains, vt_losses_ew, transmit_gains)
-#vt_signal_strength_ns = ut.calc_received_power(r_vt_interp,vt_gains, vt_losses_ns, transmit_gains)
-#tl_signal_strength_ew = ut.calc_received_power(r_tl_interp,tl_gains, tl_losses_ew, transmit_gains)
-#tl_signal_strength_ns = ut.calc_received_power(r_tl_interp,tl_gains, tl_losses_ns, transmit_gains)
+
 # Plots
-plt.ylim(-160,-115)
+plt.title('Transmitter components')
+plt.plot(times_interp,transmitters_aligned[:,0], label='X')
+plt.plot(times_interp, transmitters_aligned[:,1], label='Y')
+plt.plot(times_interp, transmitters_aligned[:,2], label='Z')
+plt.legend()
+plt.show()
+"""
+plt.ylim(-200,-115)
 plt.title('Signal Strength across Receivers')
 plt.ylabel('Signal Strength (dBm)')
 plt.xlabel('Time (s)')
@@ -133,17 +103,6 @@ plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,0], label='Venetie EW
 plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,1], label='Venetie NS', linestyle='dashed')
 plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,0], label='Toolik EW')
 plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,1], label='Toolik NS', linestyle='dashed')
-plt.legend()
-plt.show()
-
-"""
-plt.plot(times_interp,pf_signal_strength_ew, label='Poker Flat EW')
-plt.plot(times_interp,pf_signal_strength_ns, label='Poker Flat NS', linestyle='dashed')
-plt.plot(times_interp,vt_signal_strength_ew, label='Venetie EW')
-plt.plot(times_interp,vt_signal_strength_ns, label='Venetie NS', linestyle='dashed')
-plt.plot(times_interp,tl_signal_strength_ew, label='Toolik EW')
-plt.plot(times_interp,tl_signal_strength_ns, label='Toolik NS', linestyle='dashed')
-
 plt.legend()
 plt.show()
 """
