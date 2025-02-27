@@ -4,6 +4,8 @@ from scipy.spatial.transform import Rotation as R
 from scipy.interpolate import CubicSpline
 from scipy.interpolate import RBFInterpolator as rbf
 from scipy.interpolate import RectBivariateSpline as rbs
+import scipy.interpolate as ip
+from scipy.ndimage import uniform_filter1d
 import pandas as pd
 from PyNEC import *
 import ppigrf as pp
@@ -45,12 +47,15 @@ def c_s_vec_conversion(cartesian_vec):
     theta = np.arccos(cartesian_vec[2]/r)
     phi = np.arctan(cartesian_vec[1]/cartesian_vec[0])
     return np.array([r,theta,phi])
+
+############################################ INTERPOLATION FUNCTIONS ############################################
 def interp_time(times, sample_rate, start_time=0, end_time=None):
     if end_time is None:
         end_time = times[-1]
     new_times = np.arange(times[0], times[-1],1/sample_rate)
     interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
     return new_times[interval_indices]
+
 #interpolates Nyquist position to given sample rate. Optionally specify time interval for performance.
 def interp_position(times, sample_rate, position_vector, start_time=0, end_time= None, coord_system = "spherical",new_times=None):
     #times with parameterized sample rate
@@ -58,27 +63,35 @@ def interp_position(times, sample_rate, position_vector, start_time=0, end_time=
         end_time = times[-1]
     if new_times is None:
         new_times = np.arange(times[0], times[-1],1/sample_rate)
-
     position_vector[:, 1] = np.radians(position_vector[:, 1])  
     position_vector[:, 2] = np.radians(position_vector[:, 2])
-
     # Find the indices corresponding to the time interval
     unique_indices = np.unique(times, return_index=True)[1]
     times = times[unique_indices]
     position_vector = position_vector[unique_indices]
+    
 
     interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
+    time_slice = new_times[interval_indices]
 
+    positions_cartesian = np.apply_along_axis(s_c_vec_conversion, 1, np.copy(position_vector))
+    arc_length = np.cumsum(np.linalg.norm(np.diff(positions_cartesian, axis=0), axis=1))
+    arc_length = np.insert(arc_length, 0, 0)
 
-    # Interpolate position functions for the specified time interval
-    pos_interp_funcs = [CubicSpline(times, position_vector[:,i], extrapolate=True) for i in range(position_vector.shape[1])]
+    arc_length, unique_arc_indices = np.unique(arc_length, return_index=True)
+    positions_cartesian = positions_cartesian[unique_arc_indices]
 
-    pos_interp = np.column_stack([func(new_times[interval_indices]) for func in pos_interp_funcs])
+    num_samples = len(times)
 
-    # Get cartesian versions for the specified time interval
-    pos_interp_cart = np.apply_along_axis(s_c_vec_conversion, 1, np.copy(pos_interp))
+    arc_length_uniform = np.linspace(arc_length[0], arc_length[-1], num_samples)
+    pos_interp_funcs = [ip.PchipInterpolator(arc_length, positions_cartesian[:,i]) for i in range(3)]
+    valid_indices = interval_indices[interval_indices<len(arc_length_uniform)]
+    positions_cartesian_resampled = np.column_stack([func(arc_length_uniform) for func in pos_interp_funcs])
 
-    
+    pos_interp_funcs_time = [ip.PchipInterpolator(times, positions_cartesian_resampled[:,i]) for i in range(3)]
+    pos_interp_cart = np.column_stack([func(time_slice) for func in pos_interp_funcs_time])
+    pos_interp = np.apply_along_axis(c_s_vec_conversion, 1, np.copy(pos_interp_cart))
+
     new_times = new_times[interval_indices]
     if coord_system == "spherical":
         return pos_interp
@@ -220,6 +233,7 @@ def get_receiver_gain(r_rocket, nec_sheet_name):
 ############################################ SIGNAL VISUALIZATION FUNCTIONS ############################################
 
 freq = 162.990625e6  # transmit frequency (Hz)
+#freq = 150e6
 Gtx = 2.1  # dBi for transmitter gain
 txPwr = 2 # Transmit power in Watts
 Bn = 20e3  # Bandwidth
