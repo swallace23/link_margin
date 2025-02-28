@@ -3,6 +3,7 @@ import numpy as np
 
 R_EARTH = 6371000  # Earth radius in meters
 
+# Reads Nyquist trajectory file
 def read_traj_data(filename):
     trajectoryrt = np.genfromtxt(filename, skip_header=1, dtype=float)
 
@@ -42,6 +43,7 @@ def translate_point_spherical(r1, theta1, phi1, r2, theta2, phi2):
 	# Convert back to spherical coordinates
 	return cartesian_to_spherical(*translated_cartesian)
 
+# Get Nyquist rocket position in spherical coordinates with respect to a receiver
 def get_spherical_position(receiver_lat, receiver_lon, traj_arrays):
     pos_vec = np.zeros((len(traj_arrays["Time"]),3))
     times = traj_arrays["Time"]

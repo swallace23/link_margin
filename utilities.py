@@ -17,12 +17,8 @@ def clip_norm_dots(vec1, vec2):
 def unit_vector(vector):
     return vector / np.linalg.norm(vector)
 
-def angle_between(v1, v2):
-    v1_u = unit_vector(v1)
-    v2_u = unit_vector(v2)
-    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 ############################################ POLARIZATION LOSS FUNCTIONS ############################################
-
+# Calculates polarization loss factor per Alex Mule's formula
 def get_polarization_loss(receiver, source, separation):
 
     receiver_hat = unit_vector(receiver)
@@ -35,7 +31,8 @@ def get_polarization_loss(receiver, source, separation):
     denominator = np.maximum(denominator,1e-6)
     ploss = (dot_rs - (dot_rsep*dot_ssep))/denominator
     return ploss
-# convert numpy vector from spherical to cartesian coordinates
+
+# convert vector from spherical to cartesian coordinates
 def s_c_vec_conversion(spherical_vec):
     x = spherical_vec[0] * np.sin(spherical_vec[1]) * np.cos(spherical_vec[2])
     y = spherical_vec[0] * np.sin(spherical_vec[1]) * np.sin(spherical_vec[2])
@@ -49,6 +46,7 @@ def c_s_vec_conversion(cartesian_vec):
     return np.array([r,theta,phi])
 
 ############################################ INTERPOLATION FUNCTIONS ############################################
+# Gets time slice with even spacing
 def interp_time(times, sample_rate, start_time=0, end_time=None):
     if end_time is None:
         end_time = times[-1]
@@ -56,7 +54,8 @@ def interp_time(times, sample_rate, start_time=0, end_time=None):
     interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
     return new_times[interval_indices]
 
-#interpolates Nyquist position to given sample rate. Optionally specify time interval for performance.
+# Interpolates Nyquist rocket position to given sample rate and time slice. 
+# Interpolation over cartesian coordinates with respect to arc length to improve data fidelity over non-uniform time grid.
 def interp_position(times, sample_rate, position_vector, start_time=0, end_time= None, coord_system = "spherical",new_times=None):
     #times with parameterized sample rate
     if end_time is None:
@@ -85,7 +84,6 @@ def interp_position(times, sample_rate, position_vector, start_time=0, end_time=
 
     arc_length_uniform = np.linspace(arc_length[0], arc_length[-1], num_samples)
     pos_interp_funcs = [ip.PchipInterpolator(arc_length, positions_cartesian[:,i]) for i in range(3)]
-    valid_indices = interval_indices[interval_indices<len(arc_length_uniform)]
     positions_cartesian_resampled = np.column_stack([func(arc_length_uniform) for func in pos_interp_funcs])
 
     pos_interp_funcs_time = [ip.PchipInterpolator(times, positions_cartesian_resampled[:,i]) for i in range(3)]
@@ -100,6 +98,7 @@ def interp_position(times, sample_rate, position_vector, start_time=0, end_time=
     else:
         raise ValueError("Invalid coordinate system specified. Must be 'spherical' or 'cartesian'.")
     
+# Interpolate Nyquist lat-lon coordinates for IGRF alignment
 def interp_lat_lon(times, traj_array, start_time=0, end_time=None, sample_rate=30):
     #times with parameterized sample rate
     if end_time is None:
@@ -125,6 +124,8 @@ def interp_lat_lon(times, traj_array, start_time=0, end_time=None, sample_rate=3
     LLA_interp = np.column_stack([lat_interp, lon_interp, alt_interp])
 
     return LLA_interp
+
+# Get IGRF for Lat-Lon-Altiude coordinates
 def get_mag(LLA):
     td = date.today()
     td = pd.Timestamp(td)
@@ -132,7 +133,7 @@ def get_mag(LLA):
     Be, Bn, Bu = pp.igrf(LLA[:,1], LLA[:,0], LLA[:,2], td)
     return np.array([Be, Bn, Bu]).squeeze().T
 
-
+# Align transmit vector with IGRF
 def align_with_mag(LLA, transmitters):
     Bs = get_mag(LLA)
     B_mag = np.linalg.norm(Bs, axis=1)
@@ -151,7 +152,7 @@ def align_with_mag(LLA, transmitters):
     return rot.apply(transmitters)
 
 
-# spins unit vector at given frequency
+# spins transmit vector at given frequency
 #TODO: Vectorize this
 def spin_whip(times, angular_frequency=2*np.pi, whip_unit_vec=[1,0,0]):
     transmitters = np.full((len(times),3),whip_unit_vec).astype(np.float64)
@@ -187,6 +188,7 @@ def rbf_nec_data(signal_data):
 	return lambda thet, ph: interp(np.array([[thet, ph]])).item()
 
 # NOTE - New PyNEC installations on unix are broken. Must install version 1.7.3.4.
+# Get dipole gain pattern for given frequency, length
 def pynec_dipole_gain(frequency, length):
     context = nec_context()
     geo = context.get_geometry()
@@ -207,7 +209,7 @@ def pynec_dipole_gain(frequency, length):
     rp = context.get_radiation_pattern(0)
     return rp.get_gain()
 
-
+# Interpolate gain over trajectory
 def interpolate_pynec(frequency, length, r_rocket):
     gains = pynec_dipole_gain(frequency, length)
     result = np.zeros(len(r_rocket))
@@ -220,7 +222,7 @@ def interpolate_pynec(frequency, length, r_rocket):
     return result
 
 #TODO: Vectorize this, switch to RBS interpolation
-# Get receiver gain 
+# Get receiver gain from Alexx Lipschultz' NEC data file
 def get_receiver_gain(r_rocket, nec_sheet_name):
     signal_data = data_from_excel(nec_sheet_name)
     rbf_f = rbf_nec_data(signal_data)
@@ -230,7 +232,7 @@ def get_receiver_gain(r_rocket, nec_sheet_name):
          gains[i] = rbf_f(r_rocket[i][2],r_rocket[i][1])
     return gains
 
-############################################ SIGNAL VISUALIZATION FUNCTIONS ############################################
+############################################ SIGNAL POWER ############################################
 
 freq = 162.990625e6  # transmit frequency (Hz)
 #freq = 150e6

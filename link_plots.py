@@ -1,3 +1,4 @@
+# This script is designed to work as an executable to generate plots.
 import argparse
 parser = argparse.ArgumentParser(description='Generate link budget plots', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("start_time", type=int, help="Start time for plot")
