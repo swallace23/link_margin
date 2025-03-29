@@ -1,15 +1,11 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.spatial.transform import Rotation as R
-from scipy.interpolate import CubicSpline
-from scipy.interpolate import RBFInterpolator as rbf
 from scipy.interpolate import RectBivariateSpline as rbs
 import scipy.interpolate as ip
-from scipy.ndimage import uniform_filter1d
 import pandas as pd
 from PyNEC import *
 import ppigrf as pp
 from datetime import date
+from scipy.linalg import null_space
 ############################################ MATH UTILITIES ############################################
 # einsum - einstein summation convention - here, row-wise dot product
 def clip_norm_dots(vec1, vec2):
@@ -45,147 +41,94 @@ def c_s_vec_conversion(cartesian_vec):
     phi = np.arctan(cartesian_vec[1]/cartesian_vec[0])
     return np.array([r,theta,phi])
 
-############################################ INTERPOLATION FUNCTIONS ############################################
-# Gets time slice with even spacing
-def interp_time(times, sample_rate, start_time=0, end_time=None):
-    if end_time is None:
-        end_time = times[-1]
-    new_times = np.arange(times[0], times[-1],1/sample_rate)
-    interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
-    return new_times[interval_indices]
+def get_thetas(r_enu):
+    return np.arctan((np.sqrt(r_enu[:,0]**2 + r_enu[:,1]**2))/r_enu[:,2])
+def get_phis(r_enu):
+    return np.arctan(r_enu[:,1]/r_enu[:,0])
 
-# Interpolates Nyquist rocket position to given sample rate and time slice. 
-# Interpolation over cartesian coordinates with respect to arc length to improve data fidelity over non-uniform time grid.
-def interp_position(times, sample_rate, position_vector, start_time=0, end_time= None, coord_system = "spherical",new_times=None):
-    #times with parameterized sample rate
-    if end_time is None:
-        end_time = times[-1]
-    if new_times is None:
-        new_times = np.arange(times[0], times[-1],1/sample_rate)
-    position_vector[:, 1] = np.radians(position_vector[:, 1])  
-    position_vector[:, 2] = np.radians(position_vector[:, 2])
-    # Find the indices corresponding to the time interval
-    unique_indices = np.unique(times, return_index=True)[1]
-    times = times[unique_indices]
-    position_vector = position_vector[unique_indices]
-    
-
-    interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
-    time_slice = new_times[interval_indices]
-
-    positions_cartesian = np.apply_along_axis(s_c_vec_conversion, 1, np.copy(position_vector))
-    arc_length = np.cumsum(np.linalg.norm(np.diff(positions_cartesian, axis=0), axis=1))
-    arc_length = np.insert(arc_length, 0, 0)
-
-    arc_length, unique_arc_indices = np.unique(arc_length, return_index=True)
-    positions_cartesian = positions_cartesian[unique_arc_indices]
-
-    num_samples = len(times)
-
-    arc_length_uniform = np.linspace(arc_length[0], arc_length[-1], num_samples)
-    pos_interp_funcs = [ip.PchipInterpolator(arc_length, positions_cartesian[:,i]) for i in range(3)]
-    positions_cartesian_resampled = np.column_stack([func(arc_length_uniform) for func in pos_interp_funcs])
-
-    pos_interp_funcs_time = [ip.PchipInterpolator(times, positions_cartesian_resampled[:,i]) for i in range(3)]
-    pos_interp_cart = np.column_stack([func(time_slice) for func in pos_interp_funcs_time])
-    pos_interp = np.apply_along_axis(c_s_vec_conversion, 1, np.copy(pos_interp_cart))
-
-    new_times = new_times[interval_indices]
-    if coord_system == "spherical":
-        return pos_interp
-    elif coord_system == "cartesian":
-        return pos_interp_cart
-    else:
-        raise ValueError("Invalid coordinate system specified. Must be 'spherical' or 'cartesian'.")
-    
-# Interpolate Nyquist lat-lon coordinates for IGRF alignment
-def interp_lat_lon(times, traj_array, start_time=0, end_time=None, sample_rate=30):
-    #times with parameterized sample rate
-    if end_time is None:
-        end_time = times[-1]
-    
-    new_times = np.arange(times[0], times[-1],1/sample_rate)
-    unique_indices = np.unique(times, return_index=True)[1]
-    times = times[unique_indices]
-    interval_indices = np.where((new_times >= start_time) & (new_times <= end_time))[0]
-    lat = np.array(traj_array["Latgd"])
-    lon = np.array(traj_array["Long"])
-    alt = np.array(traj_array["Altkm"])
-    lat = lat[unique_indices]
-    lon = lon[unique_indices]
-    alt = alt[unique_indices]
-    lat_interp_func = CubicSpline(times, lat, extrapolate=True)
-    lon_interp_func = CubicSpline(times, lon, extrapolate=True)
-    alt_interp_func = CubicSpline(times, alt, extrapolate=True)
-
-    lat_interp = lat_interp_func(new_times[interval_indices])
-    lon_interp = lon_interp_func(new_times[interval_indices])
-    alt_interp = alt_interp_func(new_times[interval_indices])
-    LLA_interp = np.column_stack([lat_interp, lon_interp, alt_interp])
-
-    return LLA_interp
-
-# Get IGRF for Lat-Lon-Altiude coordinates
+############################################ MAG FIELD FUNCTIONS ############################################
+# Get IGRF at LLA position in ENU coordinates
 def get_mag(LLA):
     td = date.today()
     td = pd.Timestamp(td)
+    LLA_kilom = LLA
+    LLA_kilom[:,2] = LLA_kilom[:,2]/1000
     #east, north, up in nano teslas
-    Be, Bn, Bu = pp.igrf(LLA[:,1], LLA[:,0], LLA[:,2], td)
+    Be, Bn, Bu = pp.igrf(LLA_kilom[:,1], LLA_kilom[:,0], LLA_kilom[:,2], td)
     return np.array([Be, Bn, Bu]).squeeze().T
 
-# Align transmit vector with IGRF
-def align_with_mag(LLA, transmitters):
-    Bs = get_mag(LLA)
-    B_mag = np.linalg.norm(Bs, axis=1)
-    #inclination angle
-    thetas = np.arccos(Bs[:,2]/ B_mag)
-    thetas = np.pi-np.abs(thetas)
-    #declination angle - positive means tilts east, negative means tilts west
-    declination = np.arctan2(Bs[:,0], Bs[:,1])
-    
-    thetas_signed = np.sign(declination)*thetas
-    x_axis = np.full((len(thetas_signed),3),[1,0,0])
-    #reshape for rotation vector
-    rot_vecs = thetas_signed[:,np.newaxis]*x_axis
+# ENU to ECEF rotation matrix at each trajectory point
+# reference - https://gssc.esa.int/navipedia/index.php/Transformations_between_ECEF_and_ENU_coordinates
+def enu_to_ecef_vec_matrix_batch(r_lat, r_lon):
+    if len(r_lat) != len(r_lon):
+        raise ValueError("r_lat and r_lon must have the same length")
+    sin_lat, cos_lat = np.sin(r_lat), np.cos(r_lat)
+    sin_lon, cos_lon = np.sin(r_lon), np.cos(r_lon)
+    R = np.empty((len(r_lat), 3, 3))
+    R[:,0,0] = -sin_lon
+    R[:,0,1] = -cos_lat * sin_lon
+    R[:,0,2] =  cos_lat * cos_lon
 
-    rot = R.from_rotvec(rot_vecs)
-    return rot.apply(transmitters)
+    R[:,1,0] =  cos_lon
+    R[:,1,1] = -cos_lat * cos_lon
+    R[:,1,2] =  cos_lat * sin_lon
+
+    R[:,2,0] = 0
+    R[:,2,1] =  sin_lat
+    R[:,2,2] =  cos_lat
+    return R
+
+# rotate IGRF vectors from transmitter frame to receiver frame in local ENU coordinates
+def translate_mag_vecs(mag_vec, r_lat, r_lon, rec_lat, rec_lon):
+    R_enu2ecef = enu_to_ecef_vec_matrix_batch(r_lat, r_lon)      # shape (N, 3, 3)
+    R_ecef2enu = np.transpose(enu_to_ecef_vec_matrix_batch(rec_lat, rec_lon), axes=(0, 2, 1))  # inverse is transpose - see reference
+
+    v_ecef = np.einsum('nij,nj->ni', R_enu2ecef, mag_vec)
+    v_rx_enu = np.einsum('nij,nj->ni', R_ecef2enu, v_ecef)
+    return v_rx_enu
+
+def align_mag(r_lla, rec_lat, rec_lon):
+    B = get_mag(r_lla)
+    # convert to receiver-centered ENU
+    B = translate_mag_vecs(B, r_lla[:,0], r_lla[:,1], rec_lat, rec_lon)
+    # normalize. where=norms!=0 prevents division by zero
+    norms = np.linalg.norm(B, axis=1, keepdims=True)
+    B_hat = np.divide(B, norms, where=norms != 0)
+    return B_hat
 
 
-# spins transmit vector at given frequency
-#TODO: Vectorize this
-def spin_whip(times, angular_frequency=2*np.pi, whip_unit_vec=[1,0,0]):
-    transmitters = np.full((len(times),3),whip_unit_vec).astype(np.float64)
-    z_axis = np.array([0,0,1]).astype(np.float64)
-    rot_angles = np.zeros((len(times),3))
+############################################ INTERPOLATION FUNCTIONS ############################################
+def interp_time_position(times, sample_rate, rocket_pos):
+    f = ip.CubicSpline(times,rocket_pos)
+    times_interp = np.arange(times[0], times[-1], 1/sample_rate)
+    return times_interp, f(times_interp)
+
+def spin(times, aligned_rocket, angular_frequency_hz):
+    z_axes = aligned_rocket/np.linalg.norm(aligned_rocket, axis=1, keepdims=True)
+    # get the plane of whip rotation (orthogonal complement to magnetic field vector)
+    omega = 2*np.pi*angular_frequency_hz
+    vectors = np.zeros((len(times),3))  
     for i in range(len(times)):
-        spin_angle = (angular_frequency*times[i])%(2*np.pi)
-        rot_angles[i] = spin_angle*z_axis
+        v = z_axes[i]
+        basis = null_space(v.reshape(1, -1))  # shape (3,2)
+        u1, u2 = basis[:, 0], basis[:, 1]
+        c, s = np.cos(omega * times[i]), np.sin(omega * times[i])
+        vectors[i] = c * u1 + s * u2
 
-    spin_rots = R.from_rotvec(rot_angles)
-
-    for i in range(len(times)):
-        transmitters[i] = spin_rots[i].apply(transmitters[i])
-
-    return transmitters
-
+    return vectors
 ############################################ ANTENNA GAIN FUNCTIONS ############################################
 # Get NEC data from excel spreadsheet
-def data_from_excel(sheet_name):
-	signal_data = pd.read_excel(sheet_name)
-	# convert angle scales to match traj data
-	signal_data['THETA']=signal_data['THETA'].abs()
-	# convert complete loss value to avoid screwing up the interpolation
-	signal_data.loc[signal_data['TOTAL']<=-900, 'TOTAL']=-20
-	return(signal_data)
-
-# Get receiver gain interpolation function 
-def rbf_nec_data(signal_data):
-	theta_vals = signal_data[['THETA']].to_numpy().flatten()
-	phi_vals = signal_data[['PHI']].to_numpy().flatten()
-	totals = signal_data['TOTAL'].to_numpy()
-	interp = rbf(list(zip(theta_vals, phi_vals)), totals)
-	return lambda thet, ph: interp(np.array([[thet, ph]])).item()
+def get_rx_gain(sheet_name, thetas, phis):
+    signal_data = pd.read_excel(sheet_name)
+    # convert angle scales to match traj data
+    signal_data['THETA']=signal_data['THETA'].abs()
+    # convert complete loss value to avoid screwing up the interpolation
+    signal_data.loc[signal_data['TOTAL']<=-900, 'TOTAL']=-20
+    signal_data = signal_data[['THETA', 'PHI', 'TOTAL']].to_numpy()
+    grid = np.column_stack((signal_data[:,0], signal_data[:,1]))
+    f = ip.LinearNDInterpolator(grid, signal_data[:,2])
+    gains = f(thetas, phis)
+    return(gains)
 
 # NOTE - New PyNEC installations on unix are broken. Must install version 1.7.3.4.
 # Get dipole gain pattern for given frequency, length
@@ -210,27 +153,16 @@ def pynec_dipole_gain(frequency, length):
     return rp.get_gain()
 
 # Interpolate gain over trajectory
-def interpolate_pynec(frequency, length, r_rocket):
+def interpolate_pynec(frequency, length, thetas, phis):
+    if len(thetas) != len(phis):
+        raise ValueError("The lengths of thetas and phis must be equal.")
     gains = pynec_dipole_gain(frequency, length)
-    result = np.zeros(len(r_rocket))
-    thetas = np.linspace(0,90,90)
-    phis = np.linspace(0,180,180)
-    interp = rbs(thetas, phis, gains)
-    theta_vals = r_rocket[:,2]
-    phi_vals = r_rocket[:,1]
-    result = interp(theta_vals, phi_vals, grid=False)
+    result = np.zeros(len(thetas))
+    theta_grid = np.linspace(0,90,90)
+    phi_grid = np.linspace(0,180,180)
+    interp = rbs(theta_grid, phi_grid, gains)
+    result = interp(thetas, phis, grid=False)
     return result
-
-#TODO: Vectorize this, switch to RBS interpolation
-# Get receiver gain from Alexx Lipschultz' NEC data file
-def get_receiver_gain(r_rocket, nec_sheet_name):
-    signal_data = data_from_excel(nec_sheet_name)
-    rbf_f = rbf_nec_data(signal_data)
-	# gain calculations
-    gains = np.zeros(len(r_rocket))
-    for i in range(len(r_rocket)):
-         gains[i] = rbf_f(r_rocket[i][2],r_rocket[i][1])
-    return gains
 
 ############################################ SIGNAL POWER ############################################
 
@@ -244,12 +176,26 @@ NFrx = 10.0 ** (NFrx_dB / 10)  # Convert to dimensionless quantity
 c_speed = 3.0e8  # Speed of light in m/s
 kB = 1.38e-23  # Boltzmann constant
 
-def path_loss(rocket_pos):
-    return (4*np.pi*rocket_pos[:,0]*freq/c_speed)**2
+def path_loss(radius):
+    return (4*np.pi*radius*freq/c_speed)**2
 
-def calc_received_power(rocket_pos, gains_rx, gains_tx, ploss):
-     result_watts = (txPwr * np.multiply(np.multiply(gains_tx,gains_rx),ploss**2))/path_loss(rocket_pos)
+def calc_received_power(radius, gains_rx, gains_tx, ploss):
+     result_watts = (txPwr * np.multiply(np.multiply(gains_tx,gains_rx),ploss**2))/path_loss(radius)
      result_watts[result_watts<=0]=1e-100
      result_watts = result_watts.astype(np.float64)
      result_dBm = 10*np.log10(result_watts)+30
      return result_dBm
+
+"""
+# align unit vector a onto unit vector b
+# formula from https://math.stackexchange.com/questions/180418/calculate-rotation-matrix-to-align-vector-a-to-vector-b-in-3d
+def align(a,b):
+    v= np.cross(a,b)
+    s = np.linalg.norm(v)
+    c = np.dot(a,b)
+    skew = np.array([[0,-v[2],v[1]],[v[2],0,-v[0]],[-v[1],v[0],0]])
+    I= np.eye(3)
+    R = I + skew + np.dot(skew,skew) * (1-c)/(s**2)
+    return np.matmul(R,a)
+
+"""
