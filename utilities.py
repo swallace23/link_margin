@@ -28,19 +28,6 @@ def get_polarization_loss(receiver, source, separation):
     ploss = (dot_rs - (dot_rsep*dot_ssep))/denominator
     return ploss
 
-# convert vector from spherical to cartesian coordinates
-def s_c_vec_conversion(spherical_vec):
-    x = spherical_vec[0] * np.sin(spherical_vec[1]) * np.cos(spherical_vec[2])
-    y = spherical_vec[0] * np.sin(spherical_vec[1]) * np.sin(spherical_vec[2])
-    z = spherical_vec[0] * np.cos(spherical_vec[1])
-    return np.array([x, y, z])
-# cartesian to spherical
-def c_s_vec_conversion(cartesian_vec):
-    r = np.sqrt(cartesian_vec[0]**2+cartesian_vec[1]**2+cartesian_vec[2]**2)
-    theta = np.arccos(cartesian_vec[2]/r)
-    phi = np.arctan(cartesian_vec[1]/cartesian_vec[0])
-    return np.array([r,theta,phi])
-
 def get_thetas(r_enu):
     return np.arctan((np.sqrt(r_enu[:,0]**2 + r_enu[:,1]**2))/r_enu[:,2])
 def get_phis(r_enu):
@@ -153,7 +140,7 @@ def pynec_dipole_gain(frequency, length):
     return rp.get_gain()
 
 # Interpolate gain over trajectory
-def interpolate_pynec(frequency, length, thetas, phis):
+def get_tx_gain(frequency, length, thetas, phis):
     if len(thetas) != len(phis):
         raise ValueError("The lengths of thetas and phis must be equal.")
     gains = pynec_dipole_gain(frequency, length)

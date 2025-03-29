@@ -1,3 +1,6 @@
+"""
+- TODO: appears that whip is not always orthogonal to the magnetic field
+"""
 # testing link budget calculations with ENU coordinates
 import numpy as np
 import matplotlib.pyplot as plt
@@ -36,8 +39,8 @@ times = np.delete(times, duplicate_indices)
 
 times_interp, rocket_enu_interp = ut.interp_time_position(times, sample_rate, rocket_enu)
 rocket_lla_interp = ut.interp_time_position(times, sample_rate, rocket_lla)[1]
-rocket_spherical_interp = np.apply_along_axis(ut.c_s_vec_conversion,1,rocket_enu_interp)
 
+# define receiver vectors
 receivers_ew = np.full((len(times_interp),3),[1,0,0]).astype(np.float64)
 receivers_ns = np.full((len(times_interp),3),[0,1,0]).astype(np.float64)
 
@@ -46,24 +49,31 @@ receivers_ns = np.full((len(times_interp),3),[0,1,0]).astype(np.float64)
 rec_lats = np.full(len(times_interp), lat_pf)
 rec_lons = np.full(len(times_interp), long_pf)
 
+# get spinning whip vectors orthogonal to magnetic field along trajectory
 r_aligned = ut.align_mag(rocket_lla_interp, rec_lats, rec_lons)
 
 transmitters = ut.spin(times_interp, r_aligned, 0.5)
+
+# get receiver and transmitter gains along trajectory
 thetas = ut.get_thetas(rocket_enu_interp)
 phis = ut.get_phis(rocket_enu_interp)
 radius = np.linalg.norm(rocket_enu_interp, axis=1)
+
 rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
+tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
+
 
 # get polarization losses for each receiver
-losses_ew=np.zeros(len(times_interp))
-losses_ns=np.zeros(len(times_interp))
 losses_ew = ut.get_polarization_loss(receivers_ew,transmitters,rocket_enu_interp)
 losses_ns = ut.get_polarization_loss(receivers_ns,transmitters,rocket_enu_interp)
 
-# gains
-tx_gains = ut.interpolate_pynec(162.99, 1, thetas, phis)
+# get signal power
 signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
 signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
+
+plt.title("Signal Strength at Poker Flat")
+plt.xlabel("Time (s)")
+plt.ylabel("Signal Strength (dBm)")
 plt.plot(times_interp, signal_ew, label="EW")
 plt.plot(times_interp, signal_ns, label="NS")
 plt.ylim(-200,-115)
