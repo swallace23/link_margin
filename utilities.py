@@ -5,7 +5,9 @@ import pandas as pd
 from PyNEC import *
 import ppigrf as pp
 from datetime import date
-from scipy.linalg import null_space
+from scipy.spatial.transform import Rotation as R
+from scipy import linalg as la
+
 ############################################ MATH UTILITIES ############################################
 # einsum - einstein summation convention - here, row-wise dot product
 def clip_norm_dots(vec1, vec2):
@@ -83,6 +85,36 @@ def align_mag(r_lla, rec_lat, rec_lon):
     B_hat = np.divide(B, norms, where=norms != 0)
     return B_hat
 
+def rotate_whip(times, omega):
+    initial_vecs = np.full((len(times), 3), [1,0,0]).astype(np.float64)
+    r = R.from_euler('z', omega * times, degrees=False)
+    rotated_vecs = r.apply(initial_vecs)
+    return rotated_vecs
+
+
+def get_orth_basis_for_mag(mag_vec):
+    mag_unit = mag_vec / np.linalg.norm(mag_vec)
+    ns = la.null_space(mag_unit.reshape(1, -1))
+    # Orthonormalize null space
+    Q, _ = np.linalg.qr(ns)
+    orth_basis = np.column_stack((Q, mag_unit))
+    return orth_basis
+
+def s2ENU(vec):
+    """Convert spherical coordinates to ENU."""
+    r, phi, theta = vec
+    east = r * np.sin(phi) * np.cos(theta)
+    north = r * np.sin(phi) * np.sin(theta)
+    up = r * np.cos(phi)
+    return np.array([east, north, up])
+
+
+def get_transmitters(mag_vec, times, omega):
+    mag_vec_ENU = s2ENU(mag_vec)
+    basis = get_orth_basis_for_mag(mag_vec_ENU)
+    whips_mag_frame = rotate_whip(times, omega)
+    whips_ENU = whips_mag_frame @ basis.T
+    return whips_ENU
 
 ############################################ INTERPOLATION FUNCTIONS ############################################
 def interp_time_position(times, sample_rate, rocket_pos):
@@ -97,7 +129,7 @@ def spin(times, aligned_rocket, angular_frequency_hz):
     vectors = np.zeros((len(times),3))  
     for i in range(len(times)):
         v = z_axes[i]
-        basis = null_space(v.reshape(1, -1))  # shape (3,2)
+        basis = la.null_space(v.reshape(1, -1))  # shape (3,2)
         u1, u2 = basis[:, 0], basis[:, 1]
         c, s = np.cos(omega * times[i]), np.sin(omega * times[i])
         vectors[i] = c * u1 + s * u2
@@ -107,8 +139,10 @@ def spin(times, aligned_rocket, angular_frequency_hz):
 # Get NEC data from excel spreadsheet
 def get_rx_gain(sheet_name, thetas, phis):
     signal_data = pd.read_excel(sheet_name)
-    # convert angle scales to match traj data
+    # Match angle scales
     signal_data['THETA']=signal_data['THETA'].abs()
+    thetas = np.abs(np.degrees(thetas))
+    phis = np.degrees(phis)+90
     # convert complete loss value to avoid screwing up the interpolation
     signal_data.loc[signal_data['TOTAL']<=-900, 'TOTAL']=-20
     signal_data = signal_data[['THETA', 'PHI', 'TOTAL']].to_numpy()
