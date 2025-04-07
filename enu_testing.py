@@ -83,6 +83,7 @@ losses_ew = ut.get_polarization_loss(receivers_ew,transmitters,rocket_enu_interp
 losses_ns = ut.get_polarization_loss(receivers_ns,transmitters,rocket_enu_interp)
 
 # get signal power
+#temp_tx_gains = np.full(len(times_interp), 1)
 signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
 signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
 

@@ -1,13 +1,17 @@
-# Core Link Budget Calculations
-# note - rocket position variables go r, theta phi and x, y, z
 import numpy as np
 import matplotlib.pyplot as plt
 import utilities as ut
 import nyquist as ny
-# import animation as ani
+import pymap3d as pm
 from enum import Enum
 
 ############################################ Global Parameters ############################################
+# Receiver coordinates
+class Receiver(Enum):
+    PF = 0
+    VT = 1
+    TL = 2
+
 # Receiving sites -- from SDR document
 # PF == poker flat
 lat_pf = 65.1192
@@ -27,176 +31,76 @@ long_av = -147.575
 # TL == toolik
 lat_tl = 68.627
 long_tl = -149.598
-
-nec_sheet_name = "10152024_nec_data.xlsx"
-
-start_time = 200
-end_time = 220
-sample_rate = 50
-
-class Receiver(Enum):
-    PF = 0
-    VT = 1
-    TL = 2
-
 coords = np.array([[lat_pf, long_pf], [lat_vt, long_vt], [lat_tl, long_tl]])
 
-############################################ Data Generation ############################################
+sample_rate = 50
+ell_grs = pm.Ellipsoid.from_name('grs80')
+nec_sheet_name = "10152024_nec_data.xlsx"
 
+############################################# Data Generation ############################################
 traj_arrays = ny.read_traj_data("Traj_Right.txt")
 times = ny.get_times(traj_arrays)
-positions = np.zeros((len(times),len(Receiver),3))
-for i in range(len(Receiver)):
-    positions[:,i] = ny.get_spherical_position(coords[i][0], coords[i][1], traj_arrays)
+raw_lla = np.stack([traj_arrays["Latgd"], traj_arrays["Long"], traj_arrays["Altkm"] * 1000], axis=1)
 
-times_interp = ut.interp_time(times, sample_rate, start_time, end_time)
-positions_interp = np.zeros((len(times_interp),len(Receiver),3))
-positions_interp_cartesian = np.zeros((len(times_interp),len(Receiver),3))
-for i in range(len(Receiver)):
-    positions_interp[:,i] = ut.interp_position(times, sample_rate, positions[:,i], start_time, end_time)
-    positions_interp_cartesian[:,i] = ut.interp_position(times, sample_rate, positions[:,i], start_time, end_time, coord_system="cartesian")
+# Remove duplicate time steps
+valid_indices = np.where(np.diff(times, prepend=times[0] - 1) > 0)[0]
+times = times[valid_indices]
+raw_lla = raw_lla[valid_indices]
 
-lat_lon = ut.interp_lat_lon(times, traj_arrays, start_time, end_time, sample_rate)
+# Interpolate trajectory
+times_interp, rocket_lla_interp = ut.interp_time_position(times, sample_rate, raw_lla)
 
+# Constant magnetic field approximation
+mag_vec_spherical = np.array([1, np.radians(14.5694), np.radians(90 + 77.1489)])
+transmitters = ut.get_transmitters(mag_vec_spherical, times_interp, np.pi)
+thetas = ut.get_thetas(rocket_lla_interp)
+phis = ut.get_phis(rocket_lla_interp)
+radius = np.linalg.norm(rocket_lla_interp, axis=1)
 
-receivers_ew = np.full((len(times_interp),3),[1,0,0]).astype(np.float64)
-receivers_ns = np.full((len(times_interp),3),[0,1,0]).astype(np.float64)
+rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
+tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
 
-transmitters = ut.spin_whip(times_interp, np.pi, [1,0,0])
-transmitters_aligned = ut.align_with_mag(lat_lon, transmitters).astype(np.float64)
-losses = np.zeros((len(times_interp),len(Receiver),2))
-for i in range(len(Receiver)):
-    losses[:,i,0] = ut.get_polarization_loss(receivers_ew,transmitters_aligned,positions_interp_cartesian[:,i])
-    losses[:,i,1] = ut.get_polarization_loss(receivers_ns,transmitters_aligned,positions_interp_cartesian[:,i])
+# Initialize signal storage
+signals = {}
 
-############################################ Calculations ############################################
-# polarization losses
-gains = np.zeros((len(times_interp),len(Receiver)))
-for i in range(len(Receiver)):
-    gains[:,i] = ut.get_receiver_gain(positions_interp[:,i], nec_sheet_name)
+for recv in Receiver:
+    lat, lon = coords[recv.value]
 
-# gains
-transmit_gains = ut.interpolate_pynec(162.99, 1, positions_interp[:,Receiver.PF.value])
+    # Recalculate ENU coordinates relative to this receiver
+    rocket_enu = np.column_stack(pm.geodetic2enu(
+        rocket_lla_interp[:, 0],
+        rocket_lla_interp[:, 1],
+        rocket_lla_interp[:, 2],
+        lat, lon, 0, ell=ell_grs
+    ))
 
+    # Compute spherical coordinates relative to this receiver
+    radius = np.linalg.norm(rocket_enu, axis=1)
+    thetas = ut.get_thetas(rocket_enu)
+    phis = ut.get_phis(rocket_enu)
 
+    rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
+    tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
 
-# signal strength
-signal_strengths = np.zeros((len(times_interp),len(Receiver),2))
-for i in range(len(Receiver)):
-    signal_strengths[:,i,0] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,0])
-    signal_strengths[:,i,1] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,1])
+    rec_ew = np.full_like(rocket_enu, [1, 0, 0], dtype=np.float64)
+    rec_ns = np.full_like(rocket_enu, [0, 1, 0], dtype=np.float64)
 
-# Plots
-plt.ylim(-200,-115)
-plt.title('Signal Strength across Receivers')
-plt.ylabel('Signal Strength (dBm)')
-plt.xlabel('Time (s)')
-plt.plot(times_interp,signal_strengths[:,Receiver.PF.value,0], label='Poker Flat EW')
-plt.plot(times_interp,signal_strengths[:,Receiver.PF.value,1], label='Poker Flat NS', linestyle='dashed')
-plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,0], label='Venetie EW')
-plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,1], label='Venetie NS', linestyle='dashed')
-plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,0], label='Toolik EW')
-plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,1], label='Toolik NS', linestyle='dashed')
+    losses_ew = ut.get_polarization_loss(rec_ew, transmitters, rocket_enu)
+    losses_ns = ut.get_polarization_loss(rec_ns, transmitters, rocket_enu)
+
+    signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
+    signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
+
+    signals[recv] = (signal_ew, signal_ns)
+
+############################################### Plotting ##################################################
+plt.title("Signal Strength at Receivers")
+plt.xlabel("Time (s)")
+plt.ylabel("Signal Strength (dBm)")
+for recv in Receiver:
+    ew, ns = signals[recv]
+    plt.plot(times_interp, ew, label=f"{recv.name} EW")
+    plt.plot(times_interp, ns, label=f"{recv.name} NS")
+plt.ylim(-200, -115)
 plt.legend()
 plt.show()
-
-
-
-################### Sample Rate Debugging ###################
-# import numpy as np
-# import matplotlib.pyplot as plt
-# import utilities as ut
-# import nyquist as ny
-# from enum import Enum
-
-# # Define sample rates to compare
-# sample_rates = [50,100,200]
-
-# # Receiving site coordinates
-# lat_pf, long_pf = 65.1192, -147.43
-# lat_vt, long_vt = 67.013, -146.407
-# lat_tl, long_tl = 68.627, -149.598
-# coords = np.array([[lat_pf, long_pf], [lat_vt, long_vt], [lat_tl, long_tl]])
-
-# nec_sheet_name = "10152024_nec_data.xlsx"
-# start_time = 240
-# end_time = 250
-
-# class Receiver(Enum):
-#     PF = 0
-#     VT = 1
-#     TL = 2
-
-# # Read trajectory data
-# traj_arrays = ny.read_traj_data("Traj_Right.txt")
-# times = ny.get_times(traj_arrays)
-# positions = np.zeros((len(times), len(Receiver), 3))
-
-# for i in range(len(Receiver)):
-#     positions[:, i] = ny.get_spherical_position(coords[i][0], coords[i][1], traj_arrays)
-# # Create subplots
-# fig, axes = plt.subplots(len(sample_rates), figsize=(8, 2 * len(sample_rates)), sharex=True)
-# import scipy.stats as stats
-# for idx, sample_rate in enumerate(sample_rates):
-#     # Interpolate times and positions
-#     times_interp = ut.interp_time(times, sample_rate, start_time, end_time)
-#     positions_interp = np.zeros((len(times_interp), len(Receiver), 3))
-#     positions_interp_cartesian = np.zeros((len(times_interp),len(Receiver),3))
-#     for i in range(len(Receiver)):
-#         positions_interp[:, i] = ut.interp_position(times, sample_rate, positions[:, i], start_time, end_time)
-#         positions_interp_cartesian[:,i] = ut.interp_position(times, sample_rate, positions[:,i], start_time, end_time, coord_system="cartesian")
-
-#     lat_lon = ut.interp_lat_lon(times, traj_arrays, start_time, end_time, sample_rate)
-
-#     receivers_ew = np.full((len(times_interp), 3), [1, 0, 0]).astype(np.float64)
-#     receivers_ns = np.full((len(times_interp),3),[0,1,0]).astype(np.float64)
-#     transmitters = ut.spin_whip(times_interp, np.pi, [1, 0, 0])
-#     transmitters_aligned = ut.align_with_mag(lat_lon, transmitters).astype(np.float64)
-
-#     losses = np.zeros((len(times_interp),len(Receiver),2))
-#     for i in range(len(Receiver)):
-#         losses[:,i,0] = ut.get_polarization_loss(receivers_ew,transmitters_aligned,positions_interp_cartesian[:,i])
-#         losses[:,i,1] = ut.get_polarization_loss(receivers_ns,transmitters_aligned,positions_interp_cartesian[:,i])
-
-#     ############################################ Calculations ############################################
-#     # polarization losses
-#     gains = np.zeros((len(times_interp),len(Receiver)))
-#     for i in range(len(Receiver)):
-#         gains[:,i] = ut.get_receiver_gain(positions_interp[:,i], nec_sheet_name)
-
-#     # gains
-#     transmit_gains = ut.interpolate_pynec(162.99, 1, positions_interp[:,Receiver.PF.value])
-
-
-
-#     # signal strength
-#     signal_strengths = np.zeros((len(times_interp),len(Receiver),2))
-#     for i in range(len(Receiver)):
-#         signal_strengths[:,i,0] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,0])
-#         signal_strengths[:,i,1] = ut.calc_received_power(positions_interp[:,i], gains[:,i], transmit_gains, losses[:,i,1])
-
-# # plt.ylim(-200,-115)
-# # plt.title('Signal Strength across Receivers')
-# # plt.ylabel('Signal Strength (dBm)')
-# # plt.xlabel('Time (s)')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.PF.value,0], label='Poker Flat EW')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.PF.value,1], label='Poker Flat NS', linestyle='dashed')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,0], label='Venetie EW')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.VT.value,1], label='Venetie NS', linestyle='dashed')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,0], label='Toolik EW')
-# # plt.plot(times_interp,signal_strengths[:,Receiver.TL.value,1], label='Toolik NS', linestyle='dashed')
-#     # Plot for the current sample rate
-#     axes[idx].plot(times_interp, signal_strengths[:,Receiver.PF.value, 0], label='Poker Flat ew')
-#     axes[idx].plot(times_interp, signal_strengths[:,Receiver.PF.value, 1], label='Poker Flat ns')
-#     axes[idx].set_title(f'Sample Rate: {sample_rate} Hz')
-#     axes[idx].legend()
-#     #print(f"Sample Rate: {sample_rate}: Correlation between theta and phi: {stats.pearsonr(positions_interp[:,Receiver.PF.value,1], positions_interp[:,Receiver.PF.value,2])[0]}")
-#     # print(f"Sample rate: {sample_rate}: mean(x): {np.mean(positions_interp_cartesian[:,Receiver.PF.value,0])}, std(x): {np.std(positions_interp_cartesian[:,Receiver.PF.value,0])}")
-#     # print(f"Sample rate: {sample_rate}: mean(y): {np.mean(positions_interp_cartesian[:,Receiver.PF.value,1])}, std(y): {np.std(positions_interp_cartesian[:,Receiver.PF.value,1])}")
-#     # print(f"Sample rate: {sample_rate}: mean(z): {np.mean(positions_interp_cartesian[:,Receiver.PF.value,2])}, std(z): {np.std(positions_interp_cartesian[:,Receiver.PF.value,2])}")
-# # Final formatting
-# plt.xlabel('Time')
-# for ax in axes:
-#     ax.set_ylim(-200, -90)
-# plt.tight_layout()
-# plt.show()
