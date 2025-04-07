@@ -1,4 +1,6 @@
+# module for unit tests.
 import numpy as np
+# check that the whip/transmitter vectors are orthogonal to the magnetic field vectors
 def check_whip_orthogonality(mag_vecs, whip_vecs):
     if mag_vecs.shape != whip_vecs.shape:
         raise ValueError("mag_vecs and whip_vecs must have the same shape")

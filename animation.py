@@ -1,3 +1,4 @@
+# animates vectors in time. sometimes useful for debugging/sanity checking
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from mpl_toolkits.mplot3d import Axes3D

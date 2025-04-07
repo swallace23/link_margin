@@ -6,7 +6,8 @@ import pymap3d as pm
 from enum import Enum
 
 ############################################ Global Parameters ############################################
-# Receiver coordinates
+
+# Receiver enum - comment out receivers you don't want to plot
 class Receiver(Enum):
     PF = 0
     VT = 1
@@ -32,21 +33,27 @@ long_av = -147.575
 # TL == toolik
 lat_tl = 68.627
 long_tl = -149.598
+
 coords = np.array([[lat_pf, long_pf], [lat_vt, long_vt], [lat_tl, long_tl], [lat_av, long_av]])
 
+# sample rate for interpolation
 sample_rate = 50
+# ellipsoid model for geodetic coordinate conversions
 ell_grs = pm.Ellipsoid.from_name('grs80')
+# receiver gain - from Alexx' NEC model
 nec_sheet_name = "10152024_nec_data.xlsx"
+# Giraff GPS data
 gps_sheet_name = "giraff_gps.xlsx"
 
+# for switching btwn Giraff and GNEISS trajectories
 isGiraff = True
 ############################################# Data Generation ############################################
 if isGiraff:
     times, raw_lla = ny.read_gps_file(gps_sheet_name)
 else:
-
     traj_arrays = ny.read_traj_data("Traj_Right.txt")
     times = ny.get_times(traj_arrays)
+    # must convert km to m for all the calculations
     raw_lla = np.stack([traj_arrays["Latgd"], traj_arrays["Long"], traj_arrays["Altkm"] * 1000], axis=1)
 
 # Remove duplicate time steps
@@ -58,37 +65,35 @@ raw_lla = raw_lla[valid_indices]
 # Interpolate trajectory
 times_interp, rocket_lla_interp = ut.interp_time_position(times, sample_rate, raw_lla)
 
-
-
-# Constant magnetic field approximation
+# Constant magnetic field approximation from NOAA calculator.
 mag_vec_spherical = np.array([1, np.radians(14.5694), np.radians(90 + 77.1489)])
+# generate spinning transmitter orthogonal to magnetic field approximation
 transmitters = ut.get_transmitters(mag_vec_spherical, times_interp, np.pi)
-# Initialize signal storage
+
+# store signals at each receiver in a dictionary
 signals = {}
 
 for recv in Receiver:
     lat, lon = coords[recv.value]
 
-    # Recalculate ENU coordinates relative to this receiver
+    # convert LLA to local ENU (cartesian) coordinates centered at receiver
     rocket_enu = np.column_stack(pm.geodetic2enu(
         rocket_lla_interp[:, 0],
         rocket_lla_interp[:, 1],
         rocket_lla_interp[:, 2],
         lat, lon, 0, ell=ell_grs
     ))
-    #print(np.mean(rocket_enu[:,0]), np.mean(rocket_enu[:,1]), np.mean(rocket_enu[:,2]))
-    # Compute spherical coordinates relative to this receiver
+    # spherical coordinates for path length and gain calculations
     radius = np.linalg.norm(rocket_enu, axis=1)
-    #print(np.mean(radius))
     thetas = ut.get_thetas(rocket_enu)
     phis = ut.get_phis(rocket_enu)
 
     rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
     tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
-
     rec_ew = np.full_like(rocket_enu, [1, 0, 0], dtype=np.float64)
     rec_ns = np.full_like(rocket_enu, [0, 1, 0], dtype=np.float64)
 
+    # account for transmitter - receiver orientation
     losses_ew = ut.get_polarization_loss(rec_ew, transmitters, rocket_enu)
     losses_ns = ut.get_polarization_loss(rec_ns, transmitters, rocket_enu)
 
