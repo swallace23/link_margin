@@ -1,6 +1,6 @@
-*.venv
 *.spec
 *.pyc
 __pycache__/
 dist/
 .ipynb_checkpoints/
+.*
