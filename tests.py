@@ -6,4 +6,3 @@ def check_whip_orthogonality(mag_vecs, whip_vecs):
         raise ValueError("mag_vecs and whip_vecs must be 2D arrays")
     dot_products = np.einsum('ij,ij->i',mag_vecs,whip_vecs)
     return np.all(dot_products<1e-5)
-
