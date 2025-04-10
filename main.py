@@ -47,8 +47,10 @@ nec_sheet_name = "10152024_nec_data.xlsx"
 # Giraff GPS data
 gps_sheet_name = "giraff_gps.xlsx"
 
-# for switching btwn Giraff and GNEISS trajectories
+# Giraff vs GNEISS trajectory
 isGiraff = True
+# consider receiver gain pattern
+receiveGain = False
 ############################################# Data Generation ############################################
 if isGiraff:
     times, raw_lla = ny.read_gps_file(gps_sheet_name)
@@ -104,9 +106,12 @@ for recv in Receiver:
     # account for transmitter - receiver orientation
     losses_ew = ut.get_polarization_loss(rec_ew, transmitters, rocket_enu)
     losses_ns = ut.get_polarization_loss(rec_ns, transmitters, rocket_enu)
-
-    signal_ew = ut.calc_received_power(radius, 1, tx_gains, losses_ew)
-    signal_ns = ut.calc_received_power(radius, 1, tx_gains, losses_ns)
+    if receiveGain:
+        signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
+        signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
+    else:
+        signal_ew = ut.calc_received_power(radius, 1, tx_gains, losses_ew)
+        signal_ns = ut.calc_received_power(radius, 1, tx_gains, losses_ns)
 
     signals[recv] = (signal_ew, signal_ns)
 
@@ -119,6 +124,6 @@ for recv in Receiver:
     plt.plot(times_interp, ew, label=f"{recv.name} EW")
     plt.plot(times_interp, ns, label=f"{recv.name} NS")
 plt.gca().set_ylim(bottom=-130)
-plt.xlim(0,600)
+plt.xlim(300,375)
 plt.legend()
 plt.show()
