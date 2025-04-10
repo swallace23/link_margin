@@ -9,10 +9,10 @@ from enum import Enum
 
 # Receiver enum - comment out receivers you don't want to plot
 class Receiver(Enum):
-    PF = 0
-    VT = 1
+    # PF = 0
+    # VT = 1
     TL = 2
-    AV = 3
+    # AV = 3
 
 # Receiving sites -- from SDR document
 # PF == poker flat
@@ -50,7 +50,7 @@ gps_sheet_name = "giraff_gps.xlsx"
 # Giraff vs GNEISS trajectory
 isGiraff = True
 # consider receiver gain pattern
-receiveGain = False
+receiveGain = True
 ############################################# Data Generation ############################################
 if isGiraff:
     times, raw_lla = ny.read_gps_file(gps_sheet_name)
@@ -116,14 +116,24 @@ for recv in Receiver:
     signals[recv] = (signal_ew, signal_ns)
 
 ############################################## Plotting ##################################################
-plt.title("Signal Strength at Receivers")
-plt.xlabel("Time (s)")
-plt.ylabel("Signal Strength (dBm)")
+fig, axs = plt.subplots(2,2)
+axs[0,0].plot(times_interp, radius)
+axs[0,0].set_title("Radius")
+axs[0,0].set_ylabel("Radius (m)")
+axs[1,0].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
+axs[1,0].set_title("(Absolute) Elevation Angle")
+axs[1,0].set_ylabel("Angle (rad)")
 for recv in Receiver:
     ew, ns = signals[recv]
-    plt.plot(times_interp, ew, label=f"{recv.name} EW")
-    plt.plot(times_interp, ns, label=f"{recv.name} NS")
-plt.gca().set_ylim(bottom=-130)
-plt.xlim(300,375)
-plt.legend()
+    axs[0,1].plot(times_interp, ew, label=f"{recv.name} EW")
+    axs[0,1].plot(times_interp, ns, label=f"{recv.name} NS")
+axs[0,1].set_title("Received Power")
+axs[0,1].set_ylabel("Watts")
+axs[1,1].plot(times_interp, ew+ns)
+axs[1,1].set_title("Sum of Received Power")
+axs[1,1].set_ylabel("Watts")
+# plt.gca().set_ylim(bottom=-130)
+axs[1,0].set_xlabel("Time (s)")
+axs[1,1].set_xlabel("Time (s)")
+plt.xlim(0,600)
 plt.show()

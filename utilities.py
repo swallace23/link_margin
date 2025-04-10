@@ -173,4 +173,5 @@ def calc_received_power(radius, gains_rx, gains_tx, ploss):
      result_watts = result_watts.astype(np.float64)
      # convert to dbm
      result_dBm = 10*np.log10(result_watts)+30
-     return result_dBm
+    #  return result_dBm
+     return result_watts
