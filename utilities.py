@@ -9,13 +9,12 @@ from scipy.spatial.transform import Rotation as R
 from scipy import linalg as la
 
 ############################################ MATH UTILITIES ############################################
-# row wise dot product of array of unit vectors, clipped to avoid numerical errors
-def clip_norm_dots(vec1, vec2):
-     return np.clip(np.einsum('ij,ij->i',vec1, vec2),0,0.9999)
-
 # Row wize L2 normalization
 def unit_vectors(array):
     return array/np.linalg.norm(array, axis=1)[:, np.newaxis]
+# Row wise dot product of 2D arrays
+def dots(arr1, arr2):
+    return np.einsum('ij,ij->i',arr1,arr2)
 
 ############################################ POLARIZATION LOSS FUNCTIONS ############################################
 # Calculates polarization loss factor per Alex Mule's formula
@@ -24,12 +23,9 @@ def get_polarization_loss(receiver, source, separation):
     receiver_hat = unit_vectors(receiver)
     source_hat = unit_vectors(source)
     separation_hat = unit_vectors(separation)
-    # dot_rs = np.einsum('ij,ij->i',receiver_hat,source_hat)
-    # dot_rsep = np.einsum('ij,ij->i',receiver_hat,separation_hat)
-    # dot_ssep = np.einsum('ij,ij->i',source_hat,separation_hat)
-    dot_rs = clip_norm_dots(receiver_hat,source_hat)
-    dot_rsep = clip_norm_dots(receiver_hat,separation_hat)
-    dot_ssep = clip_norm_dots(source_hat,separation_hat)
+    dot_rs = dots(receiver_hat,source_hat)
+    dot_rsep = dots(receiver_hat,separation_hat)
+    dot_ssep = dots(source_hat,separation_hat)
     # calculation
     denominator = np.sqrt(1-dot_rsep**2)*np.sqrt(1-dot_ssep**2)
     # avoid division by zero

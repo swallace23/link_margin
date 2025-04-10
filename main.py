@@ -38,6 +38,8 @@ coords = np.array([[lat_pf, long_pf], [lat_vt, long_vt], [lat_tl, long_tl], [lat
 
 # sample rate for interpolation
 sample_rate = 50
+# rocket spin freq
+omega = np.pi/2
 # ellipsoid model for geodetic coordinate conversions
 ell_grs = pm.Ellipsoid.from_name('grs80')
 # receiver gain - from Alexx' NEC model
@@ -68,10 +70,11 @@ times_interp, rocket_lla_interp = ut.interp_time_position(times, sample_rate, ra
 # Constant magnetic field approximation from NOAA calculator.
 mag_vec_spherical = np.array([1, np.radians(14.5694), np.radians(90 + 77.1489)])
 # generate spinning transmitter orthogonal to magnetic field approximation
-transmitters = ut.get_transmitters(mag_vec_spherical, times_interp, np.pi)
+transmitters = ut.get_transmitters(mag_vec_spherical, times_interp, omega)
 
 # store signals at each receiver in a dictionary
 signals = {}
+
 
 for recv in Receiver:
     lat, lon = coords[recv.value]
@@ -83,11 +86,16 @@ for recv in Receiver:
         rocket_lla_interp[:, 2],
         lat, lon, 0, ell=ell_grs
     ))
+    # adjust altitude wrt receiver above sea level
+    offset = rocket_enu[0,2]
+    rocket_enu[:,2] = rocket_enu[:,2] - offset
+    # avoid division by zero
+    idx = np.where(rocket_enu[:,2] == 0)[0]
+    rocket_enu[idx,2] = 0.0001
     # spherical coordinates for path length and gain calculations
     radius = np.linalg.norm(rocket_enu, axis=1)
     thetas = ut.get_thetas(rocket_enu)
     phis = ut.get_phis(rocket_enu)
-
     rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
     tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
     rec_ew = np.full_like(rocket_enu, [1, 0, 0], dtype=np.float64)
@@ -97,8 +105,8 @@ for recv in Receiver:
     losses_ew = ut.get_polarization_loss(rec_ew, transmitters, rocket_enu)
     losses_ns = ut.get_polarization_loss(rec_ns, transmitters, rocket_enu)
 
-    signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
-    signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
+    signal_ew = ut.calc_received_power(radius, 1, tx_gains, losses_ew)
+    signal_ns = ut.calc_received_power(radius, 1, tx_gains, losses_ns)
 
     signals[recv] = (signal_ew, signal_ns)
 
@@ -110,6 +118,7 @@ for recv in Receiver:
     ew, ns = signals[recv]
     plt.plot(times_interp, ew, label=f"{recv.name} EW")
     plt.plot(times_interp, ns, label=f"{recv.name} NS")
-plt.ylim(-200, -115)
+plt.gca().set_ylim(bottom=-130)
+plt.xlim(0,600)
 plt.legend()
 plt.show()
