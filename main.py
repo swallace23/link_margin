@@ -5,7 +5,33 @@ import nyquist as ny
 import pymap3d as pm
 from enum import Enum
 
-############################################ Global Parameters ############################################
+############################################# User Parameters ############################################
+# Plot selection
+power = True
+powerSum = True
+trajectory = True
+
+# sample rate for interpolation
+sample_rate = 50
+
+# rocket spin frequency
+omega = np.pi/2
+
+# Giraff vs GNEISS trajectory
+isGiraff = True
+
+# consider receiver gain pattern
+receiveGain = True
+
+# consider transmit gain pattern
+transmitGain = True
+
+# Time slice for plot
+startTime = 0
+endTime = 600
+
+# Received power units. 0 == dBm, 1 == Watts
+powerUnits = 1
 
 # Receiver enum - comment out receivers you don't want to plot
 class Receiver(Enum):
@@ -13,6 +39,9 @@ class Receiver(Enum):
     # VT = 1
     TL = 2
     # AV = 3
+
+
+############################################ Required Global Parameters ############################################
 
 # Receiving sites -- from SDR document
 # PF == poker flat
@@ -36,10 +65,6 @@ long_tl = -149.598
 
 coords = np.array([[lat_pf, long_pf], [lat_vt, long_vt], [lat_tl, long_tl], [lat_av, long_av]])
 
-# sample rate for interpolation
-sample_rate = 50
-# rocket spin freq
-omega = np.pi/2
 # ellipsoid model for geodetic coordinate conversions
 ell_grs = pm.Ellipsoid.from_name('grs80')
 # receiver gain - from Alexx' NEC model
@@ -47,10 +72,6 @@ nec_sheet_name = "10152024_nec_data.xlsx"
 # Giraff GPS data
 gps_sheet_name = "giraff_gps.xlsx"
 
-# Giraff vs GNEISS trajectory
-isGiraff = True
-# consider receiver gain pattern
-receiveGain = True
 ############################################# Data Generation ############################################
 if isGiraff:
     times, raw_lla = ny.read_gps_file(gps_sheet_name)
@@ -94,46 +115,42 @@ for recv in Receiver:
     # avoid division by zero
     idx = np.where(rocket_enu[:,2] == 0)[0]
     rocket_enu[idx,2] = 0.0001
-    # spherical coordinates for path length and gain calculations
+    # spherical coordinates for path length and gain calculations (this can probably be more efficient)
     radius = np.linalg.norm(rocket_enu, axis=1)
     thetas = ut.get_thetas(rocket_enu)
     phis = ut.get_phis(rocket_enu)
-    rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
-    tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
+    # calculate antenna gain
+    if receiveGain:
+        rx_gains = ut.get_rx_gain(nec_sheet_name, thetas, phis)
+    if transmitGain:
+        tx_gains = ut.get_tx_gain(162.99, 1, thetas, phis)
+    
+    # East-West and North-South receiver vectors
     rec_ew = np.full_like(rocket_enu, [1, 0, 0], dtype=np.float64)
     rec_ns = np.full_like(rocket_enu, [0, 1, 0], dtype=np.float64)
 
     # account for transmitter - receiver orientation
     losses_ew = ut.get_polarization_loss(rec_ew, transmitters, rocket_enu)
     losses_ns = ut.get_polarization_loss(rec_ns, transmitters, rocket_enu)
-    if receiveGain:
-        signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew)
-        signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns)
-    else:
-        signal_ew = ut.calc_received_power(radius, 1, tx_gains, losses_ew)
-        signal_ns = ut.calc_received_power(radius, 1, tx_gains, losses_ns)
 
+    # calculate received power
+    if receiveGain and transmitGain:
+        signal_ew = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ew, powerUnits)
+        signal_ns = ut.calc_received_power(radius, rx_gains, tx_gains, losses_ns, powerUnits)
+    elif transmitGain and not receiveGain:
+        signal_ew = ut.calc_received_power(radius, 1, tx_gains, losses_ew, powerUnits)
+        signal_ns = ut.calc_received_power(radius, 1, tx_gains, losses_ns, powerUnits)
+    elif receiveGain and not transmitGain:
+        signal_ew = ut.calc_received_power(radius, rx_gains, 1, losses_ew, powerUnits)
+        signal_ns = ut.calc_received_power(radius, rx_gains, 1, losses_ns, powerUnits)
+    else:
+        signal_ew = ut.calc_received_power(radius, 1, 1, losses_ew, powerUnits)
+        signal_ns = ut.calc_received_power(radius, 1, 1, losses_ns, powerUnits)
+
+    # store to dictionary for plotting
     signals[recv] = (signal_ew, signal_ns)
 
 ############################################## Plotting ##################################################
-fig, axs = plt.subplots(2,2)
-axs[0,0].plot(times_interp, radius)
-axs[0,0].set_title("Radius")
-axs[0,0].set_ylabel("Radius (m)")
-axs[1,0].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
-axs[1,0].set_title("(Absolute) Elevation Angle")
-axs[1,0].set_ylabel("Angle (rad)")
-for recv in Receiver:
-    ew, ns = signals[recv]
-    axs[0,1].plot(times_interp, ew, label=f"{recv.name} EW")
-    axs[0,1].plot(times_interp, ns, label=f"{recv.name} NS")
-axs[0,1].set_title("Received Power")
-axs[0,1].set_ylabel("Watts")
-axs[1,1].plot(times_interp, ew+ns)
-axs[1,1].set_title("Sum of Received Power")
-axs[1,1].set_ylabel("Watts")
-# plt.gca().set_ylim(bottom=-130)
-axs[1,0].set_xlabel("Time (s)")
-axs[1,1].set_xlabel("Time (s)")
-plt.xlim(0,600)
-plt.show()
+ut.showPlots(times_interp=times_interp, radius=radius, receive_enum=Receiver, signals=signals,  
+             powerUnits=powerUnits, startTime=startTime, endTime=endTime,thetas=thetas, 
+             power=power, powerSum=powerSum, trajectory=trajectory)

@@ -7,6 +7,7 @@ from PyNEC import *
 #from datetime import date
 from scipy.spatial.transform import Rotation as R
 from scipy import linalg as la
+import matplotlib.pyplot as plt
 
 ############################################ MATH UTILITIES ############################################
 # Row wize L2 normalization
@@ -165,13 +166,183 @@ def path_loss(radius):
 
 # Standard Friis transmission equation with polarization loss factor. 
 # Polarization loss is squared because it represents electromagnetic energy projected onto receiver.
-def calc_received_power(radius, gains_rx, gains_tx, ploss):
-     result_watts = (txPwr * np.multiply(np.multiply(gains_tx,gains_rx),ploss**2))/path_loss(radius)
+def calc_received_power(radius, gains_rx, gains_tx, ploss, unit):
+    if unit != 1 and unit != 0:
+        raise ValueError("Invalid unit specification. 0=dBm, 1=Watts")
+    result_watts = (txPwr * np.multiply(np.multiply(gains_tx,gains_rx),ploss**2))/path_loss(radius)
      # eliminate negative powers
-     result_watts[result_watts<=0]=1e-100
-     # specify float to avoid rounding
-     result_watts = result_watts.astype(np.float64)
-     # convert to dbm
-     result_dBm = 10*np.log10(result_watts)+30
-    #  return result_dBm
-     return result_watts
+    result_watts[result_watts<=0]=1e-100
+    if unit == 0:
+        # specify float to avoid rounding
+        result_watts = result_watts.astype(np.float64)
+        # convert to dbm
+        result_dBm = 10*np.log10(result_watts)+30
+        return result_dBm
+    else:     
+        return result_watts
+    
+def showPlots(times_interp, radius, receive_enum, signals, powerUnits, startTime, endTime, thetas, power, powerSum, trajectory):
+    #convert radius to km
+    radius = radius/1000
+    if power and powerSum and trajectory:
+        fig, axs = plt.subplots(2,2)
+        axs[0,0].plot(times_interp, radius)
+        axs[0,0].set_title("Radius")
+        axs[0,0].set_ylabel("Radius (km)")
+        axs[1,0].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
+        axs[1,0].set_title("(Absolute) Elevation Angle")
+        axs[1,0].set_ylabel("Angle (rad)")
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+            axs[0,1].plot(times_interp, ew, label=f"{recv.name} EW")
+            axs[0,1].plot(times_interp, ns, label=f"{recv.name} NS")
+        axs[0,1].set_title("Received Power")
+        if powerUnits == 0:
+            axs[0,1].set_ylabel("dBm")
+        elif powerUnits == 1:
+            axs[0,1].set_ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        axs[0,1].legend()
+        axs[1,1].plot(times_interp, ew+ns)
+        axs[1,1].set_title("Sum of Received Power")
+        axs[1,1].set_ylabel("Watts")
+        # plt.gca().set_ylim(bottom=-130)
+        axs[1,0].set_xlabel("Time (s)")
+        axs[1,1].set_xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(left=0.1, right=0.9,hspace=0.7, wspace=0.4)
+        plt.show()
+        return
+
+    elif power and trajectory and not powerSum:
+        fig, axs = plt.subplots(3)
+        axs[0].plot(times_interp, radius)
+        axs[0].set_title("Radius")
+        axs[0].set_ylabel("Radius (km)")
+        axs[1].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
+        axs[1].set_title("(Absolute) Elevation Angle")
+        axs[1].set_ylabel("Angle (rad)")
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+            axs[2].plot(times_interp, ew, label=f"{recv.name} EW")
+            axs[2].plot(times_interp, ns, label=f"{recv.name} NS")
+        axs[2].set_title("Received Power")
+        if powerUnits == 0:
+            axs[0,1].set_ylabel("dBm")
+        elif powerUnits == 1:
+            axs[0,1].set_ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        axs[2].legend()
+        # plt.gca().set_ylim(bottom=-130)
+        axs[2].set_xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.5)
+        plt.show()
+        return
+
+    elif power and powerSum and not trajectory:
+        fig, axs = plt.subplots(2)
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+            axs[0].plot(times_interp, ew, label=f"{recv.name} EW")
+            axs[0].plot(times_interp, ns, label=f"{recv.name} NS")
+        axs[0].set_title("Received Power")
+        axs[0].set_ylabel("Watts")
+        axs[1].plot(times_interp, ew+ns)
+        axs[1].set_title("Sum of Received Power")
+        if powerUnits == 0:
+            axs[0,1].set_ylabel("dBm")
+        elif powerUnits == 1:
+            axs[0,1].set_ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        # plt.gca().set_ylim(bottom=-130)
+        axs[1].set_xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.5)
+        plt.show()
+        return
+    
+    elif trajectory and powerSum and not power:
+        fig, axs = plt.subplots(3)
+        axs[0].plot(times_interp, radius)
+        axs[0].set_title("Radius")
+        axs[0].set_ylabel("Radius (km)")
+        axs[1].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
+        axs[1].set_title("(Absolute) Elevation Angle")
+        axs[1].set_ylabel("Angle (rad)")
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+            axs[2].plot(times_interp, ew+ns)
+        axs[2].set_title("Received Power")
+        if powerUnits == 0:
+            axs[2].set_ylabel("dBm")
+        elif powerUnits == 1:
+            axs[2].set_ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        axs[2].set_xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.7)
+        plt.show()
+        return
+        
+    elif power:
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+            plt.plot(times_interp, ew, label=f"{recv.name} EW")
+            plt.plot(times_interp, ns, label=f"{recv.name} NS")
+        plt.title("Received Power")
+        if powerUnits == 0:
+            plt.ylabel("dBm")
+        elif powerUnits == 1:
+            plt.ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        plt.xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.5)
+        plt.legend()
+        plt.show()
+        return
+    
+    elif trajectory:
+        fig, axs = plt.subplots(2)
+        axs[0].plot(times_interp, radius)
+        axs[0].set_title("Radius")
+        axs[0].set_ylabel("Radius (km)")
+        axs[1].plot(times_interp, np.abs(np.abs(thetas)-np.pi/2))
+        axs[1].set_title("(Absolute) Elevation Angle")
+        axs[1].set_ylabel("Angle (rad)")
+        axs[1].set_xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.5)
+        plt.show()
+        return
+    
+    elif powerSum:
+        for recv in receive_enum:
+            ew, ns = signals[recv]
+        plt.plot(times_interp, ew+ns, label=f"{recv.name} EW+NS")
+        plt.title("Received Power Sum")
+        if powerUnits == 0:
+            plt.ylabel("dBm")
+        elif powerUnits == 1:
+            plt.ylabel("Watts")
+        else:
+            raise ValueError("powerUnits must be 0 (dBm) or 1 (Watts)")
+        plt.xlabel("Time (s)")
+        plt.xlim(startTime,endTime)
+        plt.subplots_adjust(bottom=0.1, top=0.9, left=0.1, right=0.9, hspace=0.5)
+        plt.legend()
+        plt.show()
+        return
+    else:
+        print("I had thought that going into space would be the ultimate catharsis of that connection I had been looking for between all living things—that being up there would be the next beautiful step to understanding the harmony of the universe. In the film 'Contact,' when Jodie Foster’s character goes to space and looks out into the heavens, she lets out an astonished whisper, 'They should’ve sent a poet.' I had a different experience, because I discovered that the beauty isn’t out there, it’s down here, with all of us. Leaving that behind made my connection to our tiny planet even more profound. It was among the strongest feelings of grief I have ever encountered. The contrast between the vicious coldness of space and the warm nurturing of Earth below filled me with overwhelming sadness. Every day, we are confronted with the knowledge of further destruction of Earth at our hands: the extinction of animal species, of flora and fauna . . . things that took five billion years to evolve, and suddenly we will never see them again because of the interference of mankind. It filled me with dread. My trip to space was supposed to be a celebration; instead, it felt like a funeral.")
+        print("\n\n\n\n\n")
+        print
+        import time
+        time.sleep(5)
+        raise ValueError("No data :(")
